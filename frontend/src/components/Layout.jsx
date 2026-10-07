@@ -60,13 +60,40 @@ export default function Layout() {
         })
       });
 
-      const data = await response.json();
-      
       if (!response.ok) {
-        throw new Error(data.message || data.detail || 'Errore imprevisto durante il download');
+        const errorData = await response.json();
+        throw new Error(errorData.message || errorData.detail || 'Errore imprevisto durante il download');
       }
 
-      showDownloadCompleteNotification(data.title || 'Contenuto');
+      // Estraiamo il nome del file dall'header Content-Disposition fornito da FastAPI
+      let filename = theme === 'video' ? 'vifree_video.mp4' : 'vifree_audio.mp3';
+      const disposition = response.headers.get('Content-Disposition');
+      if (disposition) {
+        const utf8Match = disposition.match(/filename\*=utf-8''([^;]+)/i);
+        if (utf8Match && utf8Match[1]) {
+          filename = decodeURIComponent(utf8Match[1]);
+        } else {
+          const normalMatch = disposition.match(/filename="([^"]+)"/i);
+          if (normalMatch && normalMatch[1]) filename = normalMatch[1];
+        }
+      }
+
+      // Scarichiamo il blob binario in memoria locale
+      const blob = await response.blob();
+      
+      // Creiamo l'URL temporaneo e scateniamo il download nel browser del client (Desktop/Mobile)
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click(); // Salva il file nella cartella Downloads locale!
+      
+      // Pulizia risorse temporanee
+      document.body.removeChild(link);
+      window.URL.revokeObjectURL(downloadUrl);
+
+      showDownloadCompleteNotification(filename);
 
       // Se non abbiamo ancora ricevuto 'completed' dal WebSocket (raro, ma fallback sicuro)
       if (!progress || progress.status !== 'completed') {

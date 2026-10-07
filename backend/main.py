@@ -1,6 +1,5 @@
-# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -226,12 +225,12 @@ def download_media(request: DownloadRequest):
                 ws = active_connections[request.client_id]
                 asyncio.run_coroutine_threadsafe(ws.send_json({"status": "completed", "progress": 100}), loop)
 
-            return {
-                "title": info.get('title', 'Video scaricato'),
-                "file_path": file_path,
-                "filesize_approx": info.get('filesize_approx', info.get('filesize', 0)),
-                "message": "Download completato con successo"
-            }
+            filename = os.path.basename(file_path)
+            return FileResponse(
+                path=file_path, 
+                filename=filename, 
+                media_type='application/octet-stream'
+            )
     except yt_dlp.utils.DownloadError as e:
         if request.client_id and request.client_id in active_connections:
             loop = app.state.loop
