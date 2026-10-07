@@ -3,6 +3,7 @@ import ThemeToggle from './ThemeToggle';
 import InputSection from './InputSection';
 import ProgressBar from './ProgressBar';
 import useDownloadProgress from '../hooks/useDownloadProgress';
+import { requestNotificationPermission, showDownloadCompleteNotification } from '../utils/notifications';
 
 // Generatore di ID casuale per sessione
 const generateClientId = () => Math.random().toString(36).substring(2, 15);
@@ -24,6 +25,9 @@ export default function Layout() {
     setMessage('');
     reset(); // Resetta lo stato di eventuali progressi precedenti
     
+    // Richiediamo i permessi per le notifiche al primissimo avvio
+    await requestNotificationPermission();
+    
     try {
       const response = await fetch('/api/download', {
         method: 'POST',
@@ -42,6 +46,9 @@ export default function Layout() {
       if (!response.ok) {
         throw new Error(data.message || data.detail || 'Errore imprevisto durante il download');
       }
+
+      // Mostriamo la notifica nativa se l'utente ha acconsentito
+      showDownloadCompleteNotification(data.title || 'Contenuto');
 
       // Se non abbiamo ancora ricevuto 'completed' dal WS, impostiamo noi il messaggio
       if (!progress || progress.status !== 'completed') {
