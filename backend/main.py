@@ -105,10 +105,37 @@ def get_media_info(request: URLRequest):
         'quiet': True,
         'simulate': True,
         'no_warnings': True,
+        'extract_flat': 'in_playlist',
+        'playlistend': 50
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(request.url, download=False)
+            
+            # Gestione Playlist
+            if 'entries' in info:
+                entries = list(info['entries']) if info['entries'] else []
+                if not entries:
+                    raise HTTPException(status_code=400, detail="La playlist è vuota, privata o inaccessibile.")
+                
+                items = []
+                for entry in entries:
+                    if entry:
+                        items.append({
+                            "title": entry.get("title", "Sconosciuto"),
+                            "duration": entry.get("duration", 0),
+                            "thumbnail": entry.get("thumbnail", ""),
+                            "url": entry.get("url") or entry.get("webpage_url", "")
+                        })
+                
+                return {
+                    "is_playlist": True,
+                    "title": info.get("title", "Playlist"),
+                    "total_items": len(items),
+                    "items": items
+                }
+            
+            # Gestione Singolo Video (Comportamento Esistente)
             formats = []
             if 'formats' in info:
                 for f in info['formats']:
@@ -125,6 +152,7 @@ def get_media_info(request: URLRequest):
                         'format_note': f.get('format_note')
                     })
             return {
+                "is_playlist": False,
                 "title": info.get("title", "Titolo Sconosciuto"),
                 "duration": info.get("duration", 0),
                 "thumbnail": info.get("thumbnail", ""),
