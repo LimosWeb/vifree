@@ -13,4 +13,12 @@
   body {
     font-family: 'Inter', sans-serif;
   }
+  /* Previene zoom automatico iOS e ottimizza tap */
+  input, textarea, select {
+    font-size: 16px !important;
+    touch-action: manipulation;
+  }
+  button, a {
+    touch-action: manipulation;
+  }
 }

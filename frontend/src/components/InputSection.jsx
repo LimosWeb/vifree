@@ -5,6 +5,9 @@ export default function InputSection({ theme, onDownload, isLoading }) {
 
   const handleSubmit = (e) => {
     e.preventDefault();
+    // Feedback tattile al lancio del download
+    if ('vibrate' in navigator) navigator.vibrate(50);
+    
     if (url.trim() && !isLoading) {
       onDownload(url);
     }
@@ -24,12 +27,12 @@ export default function InputSection({ theme, onDownload, isLoading }) {
         onChange={(e) => setUrl(e.target.value)}
         disabled={isLoading}
         required
-        className="w-full px-5 py-4 rounded-xl shadow-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent text-gray-800 disabled:bg-gray-100 disabled:text-gray-500 transition-all text-lg"
+        className="w-full px-5 py-4 min-h-[56px] rounded-xl shadow-sm border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-transparent text-gray-800 disabled:bg-gray-100 disabled:text-gray-500 transition-all text-base sm:text-lg"
       />
       <button
         type="submit"
         disabled={isLoading || !url.trim()}
-        className={`w-full flex items-center justify-center py-4 px-6 rounded-xl text-white font-bold text-lg shadow-md transition-all focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed ${buttonColor}`}
+        className={`w-full flex items-center justify-center py-4 px-6 min-h-[56px] rounded-xl text-white font-bold text-lg shadow-md transition-transform duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed active:scale-[0.98] ${buttonColor}`}
       >
         {isLoading ? (
           <>
