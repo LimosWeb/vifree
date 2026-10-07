@@ -1,11 +1,41 @@
 # pyrefly: ignore [missing-import]
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
+import asyncio
 import yt_dlp
 import os
+import time
 
-app = FastAPI()
+# --- BACKGROUND CLEANUP TASK ---
+async def cleanup_task():
+    root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    downloads_dir = os.path.join(root_dir, 'downloads')
+    
+    while True:
+        try:
+            if os.path.exists(downloads_dir):
+                now = time.time()
+                for filename in os.listdir(downloads_dir):
+                    filepath = os.path.join(downloads_dir, filename)
+                    if os.path.isfile(filepath):
+                        # Elimina file più vecchi di 10 minuti (600 secondi)
+                        if now - os.path.getmtime(filepath) > 600:
+                            os.remove(filepath)
+        except Exception:
+            pass # Ignoriamo in modo sicuro qualsiasi eccezione nel task di background
+        await asyncio.sleep(60) # Esegui controllo ogni minuto
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(cleanup_task())
+    yield
+    task.cancel()
+
+# Inizializziamo l'app con la gestione del ciclo di vita
+app = FastAPI(lifespan=lifespan)
 
 origins = [
     "http://localhost:5173",
@@ -18,6 +48,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# --- MIDDLEWARE GESTIONE ERRORI GLOBALE ---
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    # Riformattiamo le eccezioni controllate (HTTPException) 
+    if hasattr(exc, 'status_code') and hasattr(exc, 'detail'):
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={"error": "Errore di Richiesta", "message": exc.detail}
+        )
+    
+    # Qualsiasi altra eccezione non gestita produce un errore generico a prova di stack trace
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Errore Interno", "message": "Si è verificato un errore imprevisto sul server durante l'elaborazione."}
+    )
 
 class URLRequest(BaseModel):
     url: str
@@ -44,7 +90,6 @@ def get_media_info(request: URLRequest):
     
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Estrazione dei metadati senza scaricare il file
             info = ydl.extract_info(request.url, download=False)
             
             formats = []
@@ -81,12 +126,10 @@ def get_media_info(request: URLRequest):
 
 @app.post("/api/download")
 def download_media(request: DownloadRequest):
-    # Creiamo la cartella downloads/ nella root del progetto se non esiste
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     downloads_dir = os.path.join(root_dir, 'downloads')
     os.makedirs(downloads_dir, exist_ok=True)
     
-    # restrictfilenames=True assicura che il titolo sia sanitizzato rimuovendo i caratteri non supportati
     ydl_opts = {
         'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
         'restrictfilenames': True,
@@ -95,10 +138,8 @@ def download_media(request: DownloadRequest):
     }
     
     if request.type == 'video':
-        # Scarica il miglior formato MP4 disponibile come richiesto
         ydl_opts['format'] = 'best[ext=mp4]'
     elif request.type in ('musica', 'audio'):
-        # Per la musica/audio, scarichiamo il miglior audio ed estraiamo in mp3 usando FFmpeg, preservando i metadati
         ydl_opts['format'] = 'bestaudio/best'
         ydl_opts['postprocessors'] = [
             {
@@ -116,12 +157,10 @@ def download_media(request: DownloadRequest):
         
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Eseguiamo l'estrazione e il download
             info = ydl.extract_info(request.url, download=True)
             
             file_path = ydl.prepare_filename(info)
             if request.type in ('musica', 'audio'):
-                # Se è stato convertito in mp3 da ffmpeg, aggiorniamo l'estensione nel path restituito
                 base_path, _ = os.path.splitext(file_path)
                 file_path = f"{base_path}.mp3"
                 
@@ -141,5 +180,3 @@ def download_media(request: DownloadRequest):
             status_code=400,
             detail=f"Errore durante la conversione FFmpeg o l'estrazione audio: {str(e)}"
         )
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
