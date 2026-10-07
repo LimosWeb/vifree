@@ -25,7 +25,7 @@ export default function Layout() {
   };
 
   // Sfondo dinamico con transizione fluida
-  const bgClass = theme === 'video' ? 'bg-gray-50' : 'bg-[#E0F7FA]';
+  const bgClass = theme === 'video' ? 'bg-theme-video-bg' : 'bg-theme-music-bg';
 
   return (
     <div className={`min-h-screen w-full flex flex-col transition-colors duration-300 ${bgClass}`}>

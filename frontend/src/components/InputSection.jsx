@@ -12,8 +12,8 @@ export default function InputSection({ theme, onDownload, isLoading }) {
 
   // Colore dinamico per il bottone: blu scuro (video) o blu elettrico (musica)
   const buttonColor = theme === 'video' 
-    ? 'bg-blue-800 hover:bg-blue-900 focus:ring-blue-800'
-    : 'bg-blue-500 hover:bg-blue-600 focus:ring-blue-500';
+    ? 'bg-theme-primary-video hover:brightness-110 focus:ring-theme-primary-video'
+    : 'bg-theme-primary-music hover:brightness-110 focus:ring-theme-primary-music';
 
   return (
     <form onSubmit={handleSubmit} className="w-full flex flex-col space-y-4">

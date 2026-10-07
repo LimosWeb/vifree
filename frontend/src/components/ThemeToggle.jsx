@@ -5,7 +5,7 @@ export default function ThemeToggle({ theme, setTheme }) {
         onClick={() => setTheme('video')}
         className={`px-6 py-2.5 rounded-xl font-semibold transition-all duration-300 ${
           theme === 'video'
-            ? 'bg-blue-600 text-white shadow-md scale-105'
+            ? 'bg-theme-primary-video text-white shadow-md scale-105'
             : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
         }`}
       >
@@ -15,7 +15,7 @@ export default function ThemeToggle({ theme, setTheme }) {
         onClick={() => setTheme('musica')}
         className={`px-6 py-2.5 rounded-xl font-semibold transition-all duration-300 ${
           theme === 'musica'
-            ? 'bg-cyan-500 text-white shadow-md scale-105'
+            ? 'bg-theme-primary-music text-white shadow-md scale-105'
             : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
         }`}
       >
