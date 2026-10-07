@@ -1,3 +1,4 @@
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,6 +9,9 @@ import asyncio
 import yt_dlp
 import os
 import time
+import zipfile
+import re
+from urllib.parse import quote
 
 # --- BACKGROUND CLEANUP TASK ---
 async def cleanup_task():
@@ -173,9 +177,23 @@ def download_media(request: DownloadRequest):
     downloads_dir = os.path.join(root_dir, 'downloads')
     os.makedirs(downloads_dir, exist_ok=True)
     
-    # --- YT-DLP HOOK ---
-    def progress_hook(d):
-        # Se la richiesta include un client_id ed è connesso, inoltriamo l'avanzamento
+    # 1. Rileva se l'URL appartiene ad una playlist
+    info_opts = {'quiet': True, 'simulate': True, 'no_warnings': True, 'extract_flat': 'in_playlist', 'playlistend': 50}
+    is_playlist = False
+    entries = []
+    try:
+        with yt_dlp.YoutubeDL(info_opts) as ydl:
+            info = ydl.extract_info(request.url, download=False)
+            if 'entries' in info:
+                entries_list = list(info['entries']) if info['entries'] else []
+                if len(entries_list) > 0:
+                    is_playlist = True
+                    entries = entries_list
+    except Exception:
+        raise HTTPException(status_code=400, detail="Impossibile accedere all'URL fornito.")
+
+    # Definizione generica dell'hook per il WebSocket
+    def progress_hook(d, current_index=None):
         if not request.client_id or request.client_id not in active_connections:
             return
             
@@ -200,77 +218,169 @@ def download_media(request: DownloadRequest):
                 "total_size": total_str,
                 "eta": eta
             }
-        elif status == 'finished':
-            msg = {"status": "completed", "progress": 100}
-        elif status == 'error':
-            msg = {"status": "error", "progress": 0}
-            
+            # Se siamo in una playlist, sovrascriviamo lo status e aggiungiamo l'indice
+            if current_index is not None:
+                msg["item_index"] = current_index
+                msg["status"] = "item_downloading"
+
         if msg:
             loop = app.state.loop
             ws = active_connections[request.client_id]
-            # Siccome questa callback gira all'interno di un thread separato (ThreadPoolExecutor usato da FastAPI)
-            # utilizziamo run_coroutine_threadsafe per far inviare in modo asincrono il payload dal WebSocket
             asyncio.run_coroutine_threadsafe(ws.send_json(msg), loop)
 
-    ydl_opts = {
-        'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
-        'restrictfilenames': True,
-        'quiet': True,
-        'no_warnings': True,
-        'progress_hooks': [progress_hook],
-    }
-    
-    if request.type == 'video':
-        ydl_opts['format'] = 'best[ext=mp4]'
-    elif request.type in ('musica', 'audio'):
-        ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [
-            {
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '192',
-            },
-            {
-                'key': 'FFmpegMetadata',
-                'add_metadata': True,
-            }
-        ]
-    else:
-        raise HTTPException(status_code=400, detail="Tipo di contenuto non supportato. Usa 'video' o 'audio'.")
+    if is_playlist:
+        # --- LOGICA DOWNLOAD SEQUENZIALE PER PLAYLIST ---
+        downloaded_files = []
+        playlist_title = info.get('title', 'playlist')
         
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(request.url, download=True)
-            
-            file_path = ydl.prepare_filename(info)
-            if request.type in ('musica', 'audio'):
-                base_path, _ = os.path.splitext(file_path)
-                file_path = f"{base_path}.mp3"
+        for idx, entry in enumerate(entries):
+            if not entry or not entry.get('url'):
+                continue
                 
-            # Conferma ultima completata
-            if request.client_id and request.client_id in active_connections:
-                loop = app.state.loop
-                ws = active_connections[request.client_id]
-                asyncio.run_coroutine_threadsafe(ws.send_json({"status": "completed", "progress": 100}), loop)
+            item_url = entry.get('url')
+            if not item_url.startswith('http'):
+                item_url = f"https://www.youtube.com/watch?v={item_url}"
+                
+            success = False
+            # Tentativi massimi (Timeout meccanico)
+            for attempt in range(3):
+                ydl_opts = {
+                    'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
+                    'restrictfilenames': True,
+                    'quiet': True,
+                    'no_warnings': True,
+                    # i=idx blocca il binding della closure in Python per prevenire bug nel loop
+                    'progress_hooks': [lambda d, i=idx: progress_hook(d, current_index=i)],
+                }
+                
+                if request.type == 'video':
+                    ydl_opts['format'] = 'best[ext=mp4]'
+                elif request.type in ('musica', 'audio'):
+                    ydl_opts['format'] = 'bestaudio/best'
+                    ydl_opts['postprocessors'] = [
+                        {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'},
+                        {'key': 'FFmpegMetadata', 'add_metadata': True}
+                    ]
+                
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        item_info = ydl.extract_info(item_url, download=True)
+                        file_path = ydl.prepare_filename(item_info)
+                        if request.type in ('musica', 'audio'):
+                            base_path, _ = os.path.splitext(file_path)
+                            file_path = f"{base_path}.mp3"
+                            
+                        downloaded_files.append(file_path)
+                        success = True
+                        
+                        # Invia aggiornamento specifico che il brano è completato
+                        if request.client_id and request.client_id in active_connections:
+                            loop = app.state.loop
+                            ws = active_connections[request.client_id]
+                            asyncio.run_coroutine_threadsafe(ws.send_json({
+                                "status": "item_completed", 
+                                "item_index": idx
+                            }), loop)
+                        break
+                except Exception:
+                    time.sleep(1) # Breve respiro prima di riprovare
+            
+            if not success:
+                # Se tutti e 3 i tentativi falliscono, salta il brano e notifica
+                if request.client_id and request.client_id in active_connections:
+                    loop = app.state.loop
+                    ws = active_connections[request.client_id]
+                    asyncio.run_coroutine_threadsafe(ws.send_json({
+                        "status": "item_skipped", 
+                        "item_index": idx
+                    }), loop)
 
-            filename = os.path.basename(file_path)
-            return FileResponse(
-                path=file_path, 
-                filename=filename, 
-                media_type='application/octet-stream'
-            )
-    except yt_dlp.utils.DownloadError as e:
+        if not downloaded_files:
+            raise HTTPException(status_code=400, detail="Impossibile scaricare alcun brano valido dalla playlist.")
+            
+        # Zippiamo i file scaricati in un unico archivio compresso
+        safe_title = re.sub(r'[^a-zA-Z0-9_\-]', '_', playlist_title)
+        zip_filename = f"{safe_title}.zip"
+        zip_path = os.path.join(downloads_dir, zip_filename)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for file in downloaded_files:
+                if os.path.exists(file):
+                    zipf.write(file, os.path.basename(file))
+        
+        # Aggiornamento globale per chiudere la ProgressBar/PlaylistList nel client
         if request.client_id and request.client_id in active_connections:
             loop = app.state.loop
             ws = active_connections[request.client_id]
-            asyncio.run_coroutine_threadsafe(ws.send_json({"status": "error", "progress": 0}), loop)
+            asyncio.run_coroutine_threadsafe(ws.send_json({"status": "completed", "progress": 100}), loop)
             
-        raise HTTPException(
-            status_code=400, 
-            detail="Errore durante il download: URL privato, errore di rete o formato non disponibile."
+        headers = {
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(zip_filename)}"
+        }
+        return FileResponse(
+            path=zip_path, 
+            filename=zip_filename, 
+            media_type='application/zip',
+            headers=headers
         )
-    except yt_dlp.utils.PostProcessingError as e:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Errore durante la conversione FFmpeg o l'estrazione audio: {str(e)}"
-        )
+
+    else:
+        # --- LOGICA DOWNLOAD SINGOLO VIDEO ---
+        ydl_opts = {
+            'outtmpl': os.path.join(downloads_dir, '%(title)s.%(ext)s'),
+            'restrictfilenames': True,
+            'quiet': True,
+            'no_warnings': True,
+            'progress_hooks': [lambda d: progress_hook(d)],
+        }
+        
+        if request.type == 'video':
+            ydl_opts['format'] = 'best[ext=mp4]'
+        elif request.type in ('musica', 'audio'):
+            ydl_opts['format'] = 'bestaudio/best'
+            ydl_opts['postprocessors'] = [
+                {'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'},
+                {'key': 'FFmpegMetadata', 'add_metadata': True}
+            ]
+        else:
+            raise HTTPException(status_code=400, detail="Tipo di contenuto non supportato. Usa 'video' o 'audio'.")
+            
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(request.url, download=True)
+                
+                file_path = ydl.prepare_filename(info)
+                if request.type in ('musica', 'audio'):
+                    base_path, _ = os.path.splitext(file_path)
+                    file_path = f"{base_path}.mp3"
+                    
+                if request.client_id and request.client_id in active_connections:
+                    loop = app.state.loop
+                    ws = active_connections[request.client_id]
+                    asyncio.run_coroutine_threadsafe(ws.send_json({"status": "completed", "progress": 100}), loop)
+
+                filename = os.path.basename(file_path)
+                headers = {
+                    "Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"
+                }
+                return FileResponse(
+                    path=file_path, 
+                    filename=filename, 
+                    media_type='application/octet-stream',
+                    headers=headers
+                )
+        except yt_dlp.utils.DownloadError as e:
+            if request.client_id and request.client_id in active_connections:
+                loop = app.state.loop
+                ws = active_connections[request.client_id]
+                asyncio.run_coroutine_threadsafe(ws.send_json({"status": "error", "progress": 0}), loop)
+                
+            raise HTTPException(
+                status_code=400, 
+                detail="Errore durante il download: URL privato, errore di rete o formato non disponibile."
+            )
+        except yt_dlp.utils.PostProcessingError as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Errore durante la conversione FFmpeg o l'estrazione audio: {str(e)}"
+            )
