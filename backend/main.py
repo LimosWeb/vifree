@@ -97,16 +97,22 @@ def download_media(request: DownloadRequest):
     if request.type == 'video':
         # Scarica il miglior formato MP4 disponibile come richiesto
         ydl_opts['format'] = 'best[ext=mp4]'
-    elif request.type == 'musica':
-        # Per la musica, scarichiamo il miglior audio ed estraiamo in mp3 usando FFmpeg
+    elif request.type in ('musica', 'audio'):
+        # Per la musica/audio, scarichiamo il miglior audio ed estraiamo in mp3 usando FFmpeg, preservando i metadati
         ydl_opts['format'] = 'bestaudio/best'
-        ydl_opts['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-            'preferredquality': '192',
-        }]
+        ydl_opts['postprocessors'] = [
+            {
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            },
+            {
+                'key': 'FFmpegMetadata',
+                'add_metadata': True,
+            }
+        ]
     else:
-        raise HTTPException(status_code=400, detail="Tipo di contenuto non supportato. Usa 'video' o 'musica'.")
+        raise HTTPException(status_code=400, detail="Tipo di contenuto non supportato. Usa 'video' o 'audio'.")
         
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -114,7 +120,7 @@ def download_media(request: DownloadRequest):
             info = ydl.extract_info(request.url, download=True)
             
             file_path = ydl.prepare_filename(info)
-            if request.type == 'musica':
+            if request.type in ('musica', 'audio'):
                 # Se è stato convertito in mp3 da ffmpeg, aggiorniamo l'estensione nel path restituito
                 base_path, _ = os.path.splitext(file_path)
                 file_path = f"{base_path}.mp3"
@@ -129,6 +135,11 @@ def download_media(request: DownloadRequest):
         raise HTTPException(
             status_code=400, 
             detail="Errore durante il download: URL privato, errore di rete o formato non disponibile."
+        )
+    except yt_dlp.utils.PostProcessingError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Errore durante la conversione FFmpeg o l'estrazione audio: {str(e)}"
         )
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
