@@ -1,31 +1,50 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import ThemeToggle from './ThemeToggle';
 import InputSection from './InputSection';
 import ProgressBar from './ProgressBar';
+import Toast from './Toast';
 import useDownloadProgress from '../hooks/useDownloadProgress';
 import { requestNotificationPermission, showDownloadCompleteNotification } from '../utils/notifications';
 
-// Generatore di ID casuale per sessione
 const generateClientId = () => Math.random().toString(36).substring(2, 15);
 
 export default function Layout() {
   const [theme, setTheme] = useState('video');
   const [isLoading, setIsLoading] = useState(false);
-  const [message, setMessage] = useState('');
+  const [message, setMessage] = useState(''); // Contiene messaggi di errore (il successo va nel Toast)
   
-  // Il clientId rimane costante per l'intera vita del componente Layout
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
+  
+  // Usato per forzare il re-render e pulire il campo di InputSection
+  const [formKey, setFormKey] = useState(0);
+
   const clientIdRef = useRef(generateClientId());
   const clientId = clientIdRef.current;
 
-  // Inizializza l'hook passando il client_id
   const { isConnected, progress, error: wsError, reset } = useDownloadProgress(clientId);
+
+  // Funzione condivisa per gestire l'esito positivo
+  const handleSuccess = useCallback(() => {
+    setToastMessage('✅ Download completato!');
+    setShowToast(true);
+    
+    // Feedback tattile
+    if ('vibrate' in navigator) {
+      navigator.vibrate(200);
+    }
+    
+    setIsLoading(false);
+    setFormKey(prev => prev + 1); // Rende inesistente l'input precedente, svuotandolo!
+    reset(); // Resetta l'hook e nasconde la ProgressBar immediatamente
+  }, [reset]);
 
   const handleDownload = async (url) => {
     setIsLoading(true);
     setMessage('');
-    reset(); // Resetta lo stato di eventuali progressi precedenti
+    setShowToast(false);
+    reset(); 
     
-    // Richiediamo i permessi per le notifiche al primissimo avvio
     await requestNotificationPermission();
     
     try {
@@ -37,7 +56,7 @@ export default function Layout() {
         body: JSON.stringify({
           url: url,
           type: theme,
-          client_id: clientId // Inviamo il client_id al backend
+          client_id: clientId
         })
       });
 
@@ -47,12 +66,11 @@ export default function Layout() {
         throw new Error(data.message || data.detail || 'Errore imprevisto durante il download');
       }
 
-      // Mostriamo la notifica nativa se l'utente ha acconsentito
       showDownloadCompleteNotification(data.title || 'Contenuto');
 
-      // Se non abbiamo ancora ricevuto 'completed' dal WS, impostiamo noi il messaggio
+      // Se non abbiamo ancora ricevuto 'completed' dal WebSocket (raro, ma fallback sicuro)
       if (!progress || progress.status !== 'completed') {
-         setMessage(data.message);
+         handleSuccess();
       }
     } catch (error) {
       console.error('Errore durante il download:', error);
@@ -61,29 +79,21 @@ export default function Layout() {
     }
   };
 
-  // Osserva lo stato di completamento in tempo reale dal WebSocket
+  // Osserva gli aggiornamenti in tempo reale dal WebSocket
   useEffect(() => {
     if (progress?.status === 'completed') {
-      setMessage('Download completato con successo!');
-      const timer = setTimeout(() => {
-        setIsLoading(false);
-        reset(); // Ripulisce e chiude
-      }, 2000);
-      return () => clearTimeout(timer);
+      handleSuccess();
     } else if (progress?.status === 'error' || wsError) {
       setIsLoading(false);
       setMessage(wsError || 'Errore critico durante il download dal server.');
       reset();
     }
-  }, [progress?.status, wsError, reset]);
+  }, [progress?.status, wsError, reset, handleSuccess]);
 
-  // Sfondo dinamico con transizione fluida
   const bgClass = theme === 'video' ? 'bg-theme-video-bg' : 'bg-theme-music-bg';
 
   return (
     <div className={`min-h-screen w-full flex flex-col transition-colors duration-300 ${bgClass}`}>
-      
-      {/* Header */}
       <header className="w-full p-6 sm:p-8 flex flex-col sm:flex-row items-center justify-between gap-6">
         <h1 className="text-4xl sm:text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-cyan-500 tracking-tighter">
           Vifree
@@ -91,7 +101,6 @@ export default function Layout() {
         <ThemeToggle theme={theme} setTheme={setTheme} />
       </header>
 
-      {/* Body */}
       <main className="flex-1 flex flex-col items-center justify-center p-4">
         <div className="w-full max-w-lg bg-white/80 backdrop-blur-md rounded-3xl shadow-xl p-8 sm:p-10 text-center mb-20 relative">
           <div className="space-y-8">
@@ -104,14 +113,13 @@ export default function Layout() {
               </p>
             </div>
 
-            {/* Il form viene disabilitato tramite la prop isLoading passata ad InputSection */}
             <InputSection 
+              key={formKey}
               theme={theme} 
               onDownload={handleDownload} 
               isLoading={isLoading} 
             />
             
-            {/* Contenitore a scomparsa per la ProgressBar */}
             <div 
               className="transition-all duration-500 ease-in-out" 
               style={{ 
@@ -120,7 +128,6 @@ export default function Layout() {
                 marginTop: isLoading ? '1.5rem' : '0px'
               }}
             >
-               {/* Passiamo un oggetto finto inizialmente per evitare flicker mentre il server si collega */}
                <ProgressBar progressData={progress || {
                  status: 'downloading', 
                  progress: 0, 
@@ -130,15 +137,22 @@ export default function Layout() {
                }} />
             </div>
             
-            {/* Messaggio di Esito (visibile solo quando isLoading è false e abbiamo un message) */}
             {message && !isLoading && (
-              <div className={`p-4 mt-6 rounded-xl font-medium border shadow-inner transition-opacity ${message.toLowerCase().includes('errore') ? 'bg-red-50 text-red-800 border-red-100' : 'bg-green-50 text-green-800 border-green-100'}`}>
+              <div className="p-4 mt-6 rounded-xl font-medium border shadow-inner bg-red-50 text-red-800 border-red-100 transition-opacity">
                 {message}
               </div>
             )}
           </div>
         </div>
       </main>
+
+      {/* Toast fluttuante */}
+      <Toast 
+        show={showToast} 
+        message={toastMessage} 
+        onClose={() => setShowToast(false)} 
+        duration={3000} 
+      />
     </div>
   );
 }
